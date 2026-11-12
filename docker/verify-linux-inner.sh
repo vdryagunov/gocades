@@ -137,6 +137,11 @@ if [ -d "$stage/var/opt" ]; then
 	mkdir -p /var/opt
 	cp -a "$stage/var/opt/." /var/opt/
 fi
+# config64.ini and friends — required to load the CSP provider DLL.
+if [ -d "$stage/etc/opt/cprocsp" ]; then
+	mkdir -p /etc/opt
+	cp -a "$stage/etc/opt/cprocsp" /etc/opt/
+fi
 
 export LD_LIBRARY_PATH="/opt/cprocsp/lib/amd64:/opt/cprocsp/lib/aarch64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 

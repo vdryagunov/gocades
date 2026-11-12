@@ -89,14 +89,16 @@ fi
 # ---- test -----------------------------------------------------------------
 if want test; then
 	log "unit tests"
+	# Default go test timeout is 10m; a hung CryptGenKey (BIO RNG) would
+	# burn the whole job. Fail faster and print which test is running.
 	# shellcheck disable=SC2086
-	make --no-print-directory $CACHE test
+	GOPATH=/cache/gopath GOCACHE=/cache/gocache \
+		go test -timeout 4m -count=1 -v ./...
 
 	# Linked test binary proves the dynamic loader finds libcades/….
 	log "cades runtime load check"
 	GOCADES_TEST_MROOT=1 GOPATH=/cache/gopath GOCACHE=/cache/gocache \
-		go test -count=1 -v -run 'TestIsValidRevocation' .
-	GOPATH=/cache/gopath GOCACHE=/cache/gocache go test -count=1 .
+		go test -timeout 2m -count=1 -v -run 'TestIsValidRevocation' .
 fi
 
 # ---- smoke ----------------------------------------------------------------

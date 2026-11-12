@@ -19,8 +19,17 @@ func TestX509EnrollmentCreateRequest(t *testing.T) {
 		Silent:        true,
 		Pin:           "12345678",
 	}
-	if err := key.Create(); err != nil {
-		t.Fatalf("Create: %v", err)
+	// CryptGenKey can block forever when the CSP RNG waits for BIO entropy
+	// (mouse dialog on macOS; headless hang in a broken container RNG).
+	errCh := make(chan error, 1)
+	go func() { errCh <- key.Create() }()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Create: timed out after 30s (CSP RNG likely waiting for entropy; in Docker check rndm0 / LD_LIBRARY_PATH)")
 	}
 	defer func() {
 		if err := key.Delete(); err != nil {
