@@ -84,7 +84,8 @@ COPY --from=builder /var/opt/cprocsp /var/opt/cprocsp
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     CGO_ENABLED=1 \
-    PATH="/usr/local/go/bin:/opt/cprocsp/bin/amd64:/opt/cprocsp/sbin/amd64:/opt/cprocsp/bin/aarch64:/opt/cprocsp/sbin/aarch64:${PATH}"
+    PATH="/usr/local/go/bin:/opt/cprocsp/bin/amd64:/opt/cprocsp/sbin/amd64:/opt/cprocsp/bin/aarch64:/opt/cprocsp/sbin/aarch64:${PATH}" \
+    LD_LIBRARY_PATH="/opt/cprocsp/lib/amd64:/opt/cprocsp/lib/aarch64"
 
 WORKDIR /work
 CMD ["bash"]

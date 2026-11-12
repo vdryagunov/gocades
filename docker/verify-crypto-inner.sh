@@ -49,6 +49,11 @@ want() {
 cd /work
 CACHE="GOPATH=/cache/gopath GOCACHE=/cache/gocache"
 
+# Linux #cgo has -L for link time, but no rpath. GHCR images copy only
+# /opt/cprocsp (not ld.so.conf.d from install.sh), so the runtime loader
+# needs this for libxades/libcades/….
+export LD_LIBRARY_PATH="/opt/cprocsp/lib/amd64:/opt/cprocsp/lib/aarch64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 log "CryptoPro license"
 "$CPCONFIG" -license -view || true
 
