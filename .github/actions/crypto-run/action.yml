@@ -1,0 +1,56 @@
+name: crypto-run
+description: Pull a GHCR CryptoPro env image and run verify-crypto-inner.sh for one STAGE
+inputs:
+  image:
+    description: Full image ref (ghcr.io/.../gocades-test:tag)
+    required: true
+  platform:
+    description: linux/amd64 or linux/arm64
+    required: true
+  stage:
+    description: build | test | smoke
+    required: true
+  cache_key:
+    description: Suffix for named docker volumes (e.g. debian-amd64)
+    required: true
+  strict:
+    description: STRICT=1 for smoke
+    required: false
+    default: "1"
+  skip_pades:
+    description: SKIP_PADES=1 for smoke
+    required: false
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    - name: Pull environment image
+      shell: bash
+      run: docker pull --platform "${{ inputs.platform }}" "${{ inputs.image }}"
+
+    - name: Run STAGE=${{ inputs.stage }}
+      shell: bash
+      env:
+        STRICT: ${{ inputs.strict }}
+        SKIP_PADES: ${{ inputs.skip_pades }}
+        STAGE: ${{ inputs.stage }}
+      run: |
+        set -eu
+        GOROOT=$(go env GOROOT)
+        docker run --rm \
+          --platform "${{ inputs.platform }}" \
+          -v "$GITHUB_WORKSPACE:/work" \
+          -v "$GOROOT:/usr/local/go:ro" \
+          -v "gocades-gopath-${{ inputs.cache_key }}:/cache/gopath" \
+          -v "gocades-gocache-${{ inputs.cache_key }}:/cache/gocache" \
+          -e STRICT \
+          -e SKIP_PADES \
+          -e STAGE \
+          -e CGO_ENABLED=1 \
+          -e PATH="/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+          -e GOPATH=/cache/gopath \
+          -e GOCACHE=/cache/gocache \
+          -w /work \
+          "${{ inputs.image }}" \
+          sh /work/docker/verify-crypto-inner.sh

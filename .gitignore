@@ -1,0 +1,8 @@
+.gocache/
+.gopath/
+bin/
+dist/
+# CryptoPro vendor archives: downloaded separately, never committed.
+docker/packages/*.tgz
+AGENTS.md
+.DS_Store

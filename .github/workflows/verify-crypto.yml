@@ -1,0 +1,166 @@
+# Separate jobs: build → test → smoke, each × debian|almalinux × amd64|arm64.
+# Images from GHCR (CSP+RNG); Go from setup-go. SKIP_PADES=1 in smoke.
+#
+# Variables:
+#   CRYPTO_IMAGE_REPO=ghcr.io/<owner>/gocades-test
+#   CRYPTO_IMAGE_VERSION=v1.0.0   # optional; empty → floating distro-arch tags
+#
+# Package: Private + Manage Actions access → this repo (Read).
+
+name: verify-crypto
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: verify-crypto-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CRYPTO_IMAGE_REPO: ${{ vars.CRYPTO_IMAGE_REPO }}
+  CRYPTO_IMAGE_VERSION: ${{ vars.CRYPTO_IMAGE_VERSION }}
+
+jobs:
+  # Shared matrix definition via reusable job pattern — duplicated includes
+  # keep the workflow self-contained without a second YAML file.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            arch: amd64
+            runner: ubuntu-latest
+          - distro: debian
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - distro: almalinux
+            arch: amd64
+            runner: ubuntu-latest
+          - distro: almalinux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    name: build (${{ matrix.distro }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.2"
+          cache: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        uses: ./.github/actions/crypto-image-ref
+        with:
+          distro: ${{ matrix.distro }}
+          arch: ${{ matrix.arch }}
+      - uses: ./.github/actions/crypto-run
+        with:
+          image: ${{ steps.image.outputs.ref }}
+          platform: ${{ steps.image.outputs.platform }}
+          stage: build
+          cache_key: ${{ matrix.distro }}-${{ matrix.arch }}
+
+  test:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            arch: amd64
+            runner: ubuntu-latest
+          - distro: debian
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - distro: almalinux
+            arch: amd64
+            runner: ubuntu-latest
+          - distro: almalinux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    name: test (${{ matrix.distro }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.2"
+          cache: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        uses: ./.github/actions/crypto-image-ref
+        with:
+          distro: ${{ matrix.distro }}
+          arch: ${{ matrix.arch }}
+      - uses: ./.github/actions/crypto-run
+        with:
+          image: ${{ steps.image.outputs.ref }}
+          platform: ${{ steps.image.outputs.platform }}
+          stage: test
+          cache_key: ${{ matrix.distro }}-${{ matrix.arch }}
+
+  smoke:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            arch: amd64
+            runner: ubuntu-latest
+          - distro: debian
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - distro: almalinux
+            arch: amd64
+            runner: ubuntu-latest
+          - distro: almalinux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    name: smoke (${{ matrix.distro }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.2"
+          cache: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        uses: ./.github/actions/crypto-image-ref
+        with:
+          distro: ${{ matrix.distro }}
+          arch: ${{ matrix.arch }}
+      - uses: ./.github/actions/crypto-run
+        with:
+          image: ${{ steps.image.outputs.ref }}
+          platform: ${{ steps.image.outputs.platform }}
+          stage: smoke
+          cache_key: ${{ matrix.distro }}-${{ matrix.arch }}
+          strict: "1"
+          skip_pades: "1"

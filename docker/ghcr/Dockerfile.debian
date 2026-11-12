@@ -1,0 +1,90 @@
+# syntax=docker/dockerfile:1
+#
+# GHCR environment image for GitHub Actions (CSP + RNG, no Go, no source).
+# Go is mounted in CI from actions/setup-go.
+# Build context: docker/.
+#
+# Multi-stage: g++ only while building rndm0; final image skips clang/poppler/fonts.
+
+FROM debian:bookworm-slim AS builder
+
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    -o DPkg::Options::="--path-exclude=/usr/share/doc/*" \
+    -o DPkg::Options::="--path-exclude=/usr/share/man/*" \
+    -o DPkg::Options::="--path-exclude=/usr/share/info/*" \
+    -o DPkg::Options::="--path-exclude=/usr/share/locale/*" \
+    ca-certificates \
+    gcc g++ libc6-dev make gawk \
+    libcurl4 libpcsclite1 libstdc++6 debconf lsb-base \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
+
+RUN --mount=type=bind,source=./packages,target=/src \
+    set -eux; \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        ARCHIVE="linux-amd64_deb.tgz"; \
+    else \
+        ARCHIVE="linux-arm64_deb.tgz"; \
+    fi; \
+    mkdir -p /tmp/cprocsp; \
+    tar -xzf "/src/${ARCHIVE}" -C /tmp/cprocsp --strip-components=1; \
+    cd /tmp/cprocsp; \
+    ./install.sh --yes kc1 lsb-cprocsp-devel cprocsp-pki-cades; \
+    cd /; rm -rf /tmp/cprocsp /var/log/*
+
+RUN --mount=type=bind,source=./rng,target=/rng \
+    set -eux; \
+    libdir=$(dirname "$(ls /opt/cprocsp/lib/*/librdrsup.so | head -1)"); \
+    case "$(uname -m)" in \
+        x86_64) ldso=/lib64/ld-linux-x86-64.so.2 ;; \
+        *) ldso=/lib/ld-linux-aarch64.so.1 ;; \
+    esac; \
+    cp -a /opt/cprocsp/src/rdk /tmp/rdk; \
+    cd /tmp/rdk/rndm0; \
+    sed -i 's|memset(inf->info, 0xaa, inf->length)|if (cp_fill_random(inf->info, inf->length) != 0) return (DWORD)0x80090020|' r0_exp.c; \
+    make CSP_INCLUDE=/opt/cprocsp/include CSP_DIR=/opt/cprocsp \
+         CSP_LIB="$libdir" SIZEOF_VOID_P=8 LSB_LD="$ldso" \
+         CC=gcc CXX=g++ CPP="gcc -E" AWK=gawk SED=/bin/sed \
+         add_cflags="-include /rng/cp_getrandom.h" \
+         librdrrndm0.so.4.0.5; \
+    cp -af librdrrndm0.so.4.0.5 "$libdir/"; \
+    ln -sf librdrrndm0.so.4.0.5 "$libdir/librdrrndm0.so"; \
+    ln -sf librdrrndm0.so.4.0.5 "$libdir/librdrrndm0.so.4"; \
+    for p in /opt/cprocsp/sbin/*/cpconfig; do \
+        "$p" -ini '\config\apppath' -add string librdrrndm0.so "$libdir/librdrrndm0.so"; \
+        "$p" -ini '\config\Random\RNDM0' -add string DLL librdrrndm0.so; \
+        "$p" -hardware rndm -add RNDM0 -name 'Software RNG (getrandom)' -level 1; \
+        "$p" -hardware rndm -del CPSD || true; \
+        "$p" -hardware rndm -del BIO_TUI || true; \
+        break; \
+    done; \
+    cd /; rm -rf /tmp/rdk /opt/cprocsp/src
+
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    -o DPkg::Options::="--path-exclude=/usr/share/doc/*" \
+    -o DPkg::Options::="--path-exclude=/usr/share/man/*" \
+    -o DPkg::Options::="--path-exclude=/usr/share/info/*" \
+    -o DPkg::Options::="--path-exclude=/usr/share/locale/*" \
+    ca-certificates \
+    gcc libc6-dev make gawk \
+    libcurl4 libpcsclite1 libstdc++6 debconf lsb-base \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/* /tmp/*
+
+COPY --from=builder /opt/cprocsp /opt/cprocsp
+COPY --from=builder /var/opt/cprocsp /var/opt/cprocsp
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    CGO_ENABLED=1 \
+    PATH="/usr/local/go/bin:/opt/cprocsp/bin/amd64:/opt/cprocsp/sbin/amd64:/opt/cprocsp/bin/aarch64:/opt/cprocsp/sbin/aarch64:${PATH}"
+
+WORKDIR /work
+CMD ["bash"]

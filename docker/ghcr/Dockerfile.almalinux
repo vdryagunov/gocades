@@ -1,0 +1,103 @@
+# syntax=docker/dockerfile:1
+#
+# GHCR environment image (AlmaLinux): CSP + RNG, no Go, no source.
+# Go is mounted in CI from actions/setup-go.
+# Build context: docker/.
+#
+# Multi-stage: fat toolchain (g++) only while building rndm0; the final image
+# keeps gcc for cgo and skips clang/poppler/fonts (~hundreds of MB).
+
+FROM almalinux:9-minimal AS builder
+
+ARG TARGETARCH
+
+# Stock metalink often returns a broken repomd.xml → canonical baseurls.
+RUN set -eux; \
+    rm -f /etc/yum.repos.d/almalinux*.repo; \
+    printf '%s\n' \
+      '[baseos]' 'name=baseos' \
+      'baseurl=https://repo.almalinux.org/almalinux/9/BaseOS/$basearch/os/' \
+      'gpgcheck=0' 'enabled=1' \
+      '[appstream]' 'name=appstream' \
+      'baseurl=https://repo.almalinux.org/almalinux/9/AppStream/$basearch/os/' \
+      'gpgcheck=0' 'enabled=1' \
+      >/etc/yum.repos.d/verify.repo; \
+    microdnf install -y --setopt=install_weak_deps=0 --nodocs \
+      ca-certificates tar gzip findutils \
+      gcc gcc-c++ glibc-devel glibc-gconv-extra make gawk; \
+    microdnf clean all
+
+RUN --mount=type=bind,source=./packages,target=/src \
+    set -eux; \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        ARCHIVE="linux-amd64.tgz"; \
+    else \
+        ARCHIVE="linux-arm64.tgz"; \
+    fi; \
+    mkdir -p /tmp/cprocsp; \
+    tar -xzf "/src/${ARCHIVE}" -C /tmp/cprocsp --strip-components=1; \
+    cd /tmp/cprocsp; \
+    # RPM on overlayfs often reports "needs N more space" falsely.
+    echo '%_disable_diskspacecheck 1' >/etc/rpm/macros.disable_diskspacecheck; \
+    ./install.sh --yes kc1 lsb-cprocsp-devel cprocsp-pki-cades; \
+    cd /; rm -rf /tmp/cprocsp /var/log/*
+
+RUN --mount=type=bind,source=./rng,target=/rng \
+    set -eux; \
+    libdir=$(dirname "$(ls /opt/cprocsp/lib/*/librdrsup.so | head -1)"); \
+    case "$(uname -m)" in \
+        x86_64) ldso=/lib64/ld-linux-x86-64.so.2 ;; \
+        *) ldso=/lib/ld-linux-aarch64.so.1 ;; \
+    esac; \
+    cp -a /opt/cprocsp/src/rdk /tmp/rdk; \
+    cd /tmp/rdk/rndm0; \
+    sed -i 's|memset(inf->info, 0xaa, inf->length)|if (cp_fill_random(inf->info, inf->length) != 0) return (DWORD)0x80090020|' r0_exp.c; \
+    make CSP_INCLUDE=/opt/cprocsp/include CSP_DIR=/opt/cprocsp \
+         CSP_LIB="$libdir" SIZEOF_VOID_P=8 LSB_LD="$ldso" \
+         CC=gcc CXX=g++ CPP="gcc -E" AWK=gawk SED=/bin/sed \
+         add_cflags="-include /rng/cp_getrandom.h" \
+         librdrrndm0.so.4.0.5; \
+    cp -af librdrrndm0.so.4.0.5 "$libdir/"; \
+    ln -sf librdrrndm0.so.4.0.5 "$libdir/librdrrndm0.so"; \
+    ln -sf librdrrndm0.so.4.0.5 "$libdir/librdrrndm0.so.4"; \
+    for p in /opt/cprocsp/sbin/*/cpconfig; do \
+        "$p" -ini '\config\apppath' -add string librdrrndm0.so "$libdir/librdrrndm0.so"; \
+        "$p" -ini '\config\Random\RNDM0' -add string DLL librdrrndm0.so; \
+        "$p" -hardware rndm -add RNDM0 -name 'Software RNG (getrandom)' -level 1; \
+        "$p" -hardware rndm -del CPSD || true; \
+        "$p" -hardware rndm -del BIO_TUI || true; \
+        break; \
+    done; \
+    cd /; rm -rf /tmp/rdk /opt/cprocsp/src
+
+# ---- runtime: cgo toolchain only (no clang / g++ / poppler / fonts) --------
+FROM almalinux:9-minimal
+
+RUN set -eux; \
+    rm -f /etc/yum.repos.d/almalinux*.repo; \
+    printf '%s\n' \
+      '[baseos]' 'name=baseos' \
+      'baseurl=https://repo.almalinux.org/almalinux/9/BaseOS/$basearch/os/' \
+      'gpgcheck=0' 'enabled=1' \
+      '[appstream]' 'name=appstream' \
+      'baseurl=https://repo.almalinux.org/almalinux/9/AppStream/$basearch/os/' \
+      'gpgcheck=0' 'enabled=1' \
+      >/etc/yum.repos.d/verify.repo; \
+    # libcurl-minimal is already in the base image; libcurl conflicts with it.
+    microdnf install -y --setopt=install_weak_deps=0 --nodocs \
+      ca-certificates \
+      gcc glibc-devel make gawk \
+      libstdc++ pcsc-lite-libs; \
+    microdnf clean all; \
+    rm -rf /var/log/* /usr/share/doc/* /usr/share/man/* /usr/share/locale/*
+
+COPY --from=builder /opt/cprocsp /opt/cprocsp
+COPY --from=builder /var/opt/cprocsp /var/opt/cprocsp
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    CGO_ENABLED=1 \
+    PATH="/usr/local/go/bin:/opt/cprocsp/bin/amd64:/opt/cprocsp/sbin/amd64:/opt/cprocsp/bin/aarch64:/opt/cprocsp/sbin/aarch64:${PATH}"
+
+WORKDIR /work
+CMD ["bash"]

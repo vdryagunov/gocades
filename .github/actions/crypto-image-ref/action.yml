@@ -1,0 +1,42 @@
+name: crypto-image-ref
+description: Resolve GHCR gocades-test image ref from repo variables and matrix
+inputs:
+  distro:
+    description: debian | almalinux
+    required: true
+  arch:
+    description: amd64 | arm64
+    required: true
+outputs:
+  ref:
+    description: Full image reference
+    value: ${{ steps.resolve.outputs.ref }}
+  platform:
+    description: Docker platform (linux/amd64|arm64)
+    value: ${{ steps.resolve.outputs.platform }}
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        CRYPTO_IMAGE_REPO: ${{ env.CRYPTO_IMAGE_REPO }}
+        CRYPTO_IMAGE_VERSION: ${{ env.CRYPTO_IMAGE_VERSION }}
+      run: |
+        set -eu
+        repo="${CRYPTO_IMAGE_REPO:-}"
+        if [ -z "$repo" ]; then
+          echo "Set repository variable CRYPTO_IMAGE_REPO" >&2
+          echo "example: ghcr.io/${{ github.repository_owner }}/gocades-test" >&2
+          exit 1
+        fi
+        ver="${CRYPTO_IMAGE_VERSION:-}"
+        if [ -n "$ver" ]; then
+          tag="${ver}-${{ inputs.distro }}-${{ inputs.arch }}"
+        else
+          tag="${{ inputs.distro }}-${{ inputs.arch }}"
+        fi
+        ref="${repo}:${tag}"
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+        echo "platform=linux/${{ inputs.arch }}" >> "$GITHUB_OUTPUT"
+        echo "image: $ref"

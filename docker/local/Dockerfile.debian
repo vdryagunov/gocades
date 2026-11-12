@@ -1,0 +1,102 @@
+# syntax=docker/dockerfile:1
+#
+# Local CryptoPro test image (full one-shot).
+# Build context: module root.
+#
+#   docker build -f docker/local/Dockerfile.debian \
+#     --build-arg CRYPTOPRO_PKG=docker/packages/linux-amd64_deb.tgz \
+#     -t gocades-crypto:debian-amd64 .
+#   docker run --rm -e STRICT=1 gocades-crypto:debian-amd64
+#
+# Or: make verify-crypto DISTRO=debian
+
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG GO_VERSION=1.25.2
+# TARGETARCH is provided automatically by BuildKit; do not give it a default.
+ARG TARGETARCH
+ARG CRYPTOPRO_PKG=docker/packages/linux-amd64_deb.tgz
+
+# Toolchain plus runtime deps CryptoPro CSP expects.
+#
+# The slim image ships no CA bundle and plain-HTTP mirrors are often blocked,
+# so TLS peer verification is relaxed for the bootstrap only; package
+# authenticity still comes from apt's GPG signatures.
+RUN set -eux; \
+    for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$f" ] || continue; \
+        sed -i 's|http://deb.debian.org|https://deb.debian.org|g' "$f"; \
+        sed -i 's|http://security.debian.org|https://security.debian.org|g' "$f"; \
+    done; \
+    apt-get -o Acquire::https::Verify-Peer=false \
+            -o Acquire::https::Verify-Host=false update -qq; \
+    apt-get -o Acquire::https::Verify-Peer=false \
+            -o Acquire::https::Verify-Host=false install -y -qq --no-install-recommends \
+        ca-certificates curl xz-utils \
+        gcc g++ libc6-dev make clang gawk \
+        lsb-base libcurl4 libpcsclite1 libstdc++6 debconf \
+        pcscd libccid poppler-utils fonts-dejavu-core; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" -o /tmp/go.tgz; \
+    tar -C /usr/local -xzf /tmp/go.tgz; \
+    rm -f /tmp/go.tgz
+ENV PATH=/usr/local/go/bin:$PATH
+
+# CryptoPro CSP + CAdES SDK from the vendor packages.
+COPY ${CRYPTOPRO_PKG} /tmp/cprocsp-pkg
+RUN set -eux; \
+    if [ -d /tmp/cprocsp-pkg ]; then pkgdir=/tmp/cprocsp-pkg; \
+    else \
+        pkgdir=/tmp/cprocsp-src; mkdir -p "$pkgdir"; \
+        tar -xzf /tmp/cprocsp-pkg -C "$pkgdir" --strip-components=1; \
+    fi; \
+    cd "$pkgdir"; \
+    ./install.sh --yes kc1 lsb-cprocsp-devel cprocsp-pki-cades; \
+    cd /; rm -rf /tmp/cprocsp-pkg "$pkgdir"; \
+    for p in /opt/cprocsp/sbin/*/cpconfig; do "$p" -license -view; break; done
+
+# CSP 5.0 has no usable RNG in a container → build vendor rndm0 with getrandom().
+COPY docker/rng/cp_getrandom.h /tmp/cp_getrandom.h
+RUN set -eux; \
+    libdir=$(dirname "$(ls /opt/cprocsp/lib/*/librdrsup.so | head -1)"); \
+    case "$(uname -m)" in \
+        x86_64) ldso=/lib64/ld-linux-x86-64.so.2 ;; \
+        *) ldso=/lib/ld-linux-aarch64.so.1 ;; \
+    esac; \
+    cp -a /opt/cprocsp/src/rdk /tmp/rdk; \
+    cd /tmp/rdk/rndm0; \
+    sed -i 's|memset(inf->info, 0xaa, inf->length)|if (cp_fill_random(inf->info, inf->length) != 0) return (DWORD)0x80090020|' r0_exp.c; \
+    make CSP_INCLUDE=/opt/cprocsp/include CSP_DIR=/opt/cprocsp \
+         CSP_LIB="$libdir" SIZEOF_VOID_P=8 LSB_LD="$ldso" \
+         CC=gcc CXX=g++ CPP="gcc -E" AWK=gawk SED=/bin/sed \
+         add_cflags="-include /tmp/cp_getrandom.h" \
+         librdrrndm0.so.4.0.5; \
+    cp -af librdrrndm0.so.4.0.5 "$libdir/"; \
+    ln -sf librdrrndm0.so.4.0.5 "$libdir/librdrrndm0.so"; \
+    ln -sf librdrrndm0.so.4.0.5 "$libdir/librdrrndm0.so.4"; \
+    for p in /opt/cprocsp/sbin/*/cpconfig; do \
+        "$p" -ini '\config\apppath' -add string librdrrndm0.so "$libdir/librdrrndm0.so"; \
+        "$p" -ini '\config\Random\RNDM0' -add string DLL librdrrndm0.so; \
+        "$p" -hardware rndm -add RNDM0 -name 'Software RNG (getrandom)' -level 1; \
+        "$p" -hardware rndm -del CPSD || true; \
+        "$p" -hardware rndm -del BIO_TUI || true; \
+        break; \
+    done; \
+    cd /; rm -rf /tmp/rdk /tmp/cp_getrandom.h
+
+WORKDIR /work
+# Explicit file list so docker/packages (~130 MB) stays out of the image layers.
+COPY go.mod Makefile /work/
+COPY *.go gocades.c gocades.h /work/
+COPY cmd /work/cmd
+COPY internal /work/internal
+COPY samples /work/samples
+COPY testdata /work/testdata
+COPY scripts /work/scripts
+COPY docker/verify-crypto-inner.sh /work/docker/verify-crypto-inner.sh
+
+ENTRYPOINT ["sh", "/work/docker/verify-crypto-inner.sh"]

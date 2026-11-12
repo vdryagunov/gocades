@@ -1,0 +1,87 @@
+# Optional runner-side publish of docker/ghcr images.
+# Prefer local:
+#   make -C docker ghcr-push-all VERSION=v1.0.1 \
+#     GHCR_IMAGE=ghcr.io/<owner>/gocades-test
+
+name: publish-crypto-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: all four variants, or one distro
+        required: true
+        default: all
+        type: choice
+        options: [all, debian, almalinux]
+      arch:
+        description: used only when target is a single distro
+        required: true
+        default: amd64
+        type: choice
+        options: [amd64, arm64]
+      version:
+        description: version tag (also applied as gocades-test:VERSION for debian-amd64)
+        required: true
+        default: v1.0.0
+
+jobs:
+  publish:
+    runs-on: ${{ inputs.target == 'all' && 'ubuntu-latest' || (inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest') }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DISTRO: ${{ inputs.target }}
+      ARCH: ${{ inputs.arch }}
+      VERSION: ${{ inputs.version }}
+      GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/gocades-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check vendor packages
+        run: |
+          set -eu
+          mkdir -p docker/packages
+          if [ "$DISTRO" = "all" ]; then
+            need="linux-amd64_deb.tgz linux-arm64_deb.tgz linux-amd64.tgz linux-arm64.tgz"
+          else
+            case "$DISTRO/$ARCH" in
+            debian/amd64) need=linux-amd64_deb.tgz ;;
+            debian/arm64) need=linux-arm64_deb.tgz ;;
+            almalinux/amd64) need=linux-amd64.tgz ;;
+            almalinux/arm64) need=linux-arm64.tgz ;;
+            esac
+          fi
+          missing=0
+          for name in $need; do
+            if [ ! -f "docker/packages/$name" ]; then
+              echo "missing docker/packages/$name" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Place vendor archives on the runner (self-hosted) or publish from a workstation" >&2
+            exit 2
+          fi
+
+      - name: Set up QEMU
+        if: inputs.target == 'all'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          if [ "$DISTRO" = "all" ]; then
+            make -C docker ghcr-push-all VERSION="$VERSION" GHCR_IMAGE="$GHCR_IMAGE"
+          else
+            make -C docker ghcr-push DISTRO="$DISTRO" ARCH="$ARCH" \
+              VERSION="$VERSION" GHCR_IMAGE="$GHCR_IMAGE"
+          fi
+          echo "CRYPTO_IMAGE=$GHCR_IMAGE:latest (or $GHCR_IMAGE:$VERSION)"

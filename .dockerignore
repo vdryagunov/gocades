@@ -1,0 +1,17 @@
+# Build context: the module root (the last argument of `docker build`).
+#
+# Docker only reads .dockerignore from the root of the build context, not from
+# the directory holding the Dockerfile, so this file has to stay here.
+#
+# Only the source tree and the vendor package archives are needed; the rest of
+# the repository (git metadata, Go caches, macOS artefacts) would just slow the
+# context upload down.
+#
+# docker/packages is deliberately NOT excluded: the Dockerfiles copy the
+# CryptoPro archives from it with `COPY ${CRYPTOPRO_PKG} ...`.
+
+.git
+**/.gocache
+**/.gopath
+**/.verify-cache
+**/.DS_Store

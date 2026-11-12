@@ -1,0 +1,81 @@
+# syntax=docker/dockerfile:1
+#
+# Local CryptoPro test image (AlmaLinux 9). Build context: module root.
+#
+#   docker build -f docker/local/Dockerfile.almalinux \
+#     --build-arg CRYPTOPRO_PKG=docker/packages/linux-amd64.tgz \
+#     -t gocades-crypto:almalinux-amd64 .
+#   make verify-crypto DISTRO=almalinux
+
+FROM almalinux:9
+
+ARG GO_VERSION=1.25.2
+ARG TARGETARCH
+ARG CRYPTOPRO_PKG=docker/packages/linux-amd64.tgz
+
+# Stock metalink can fail behind proxies → canonical baseurls.
+RUN set -eux; \
+    rm -f /etc/yum.repos.d/almalinux*.repo; \
+    printf '[baseos]\nname=baseos\nbaseurl=https://repo.almalinux.org/almalinux/9/BaseOS/$basearch/os/\ngpgcheck=0\nenabled=1\n[appstream]\nname=appstream\nbaseurl=https://repo.almalinux.org/almalinux/9/AppStream/$basearch/os/\ngpgcheck=0\nenabled=1\n' >/etc/yum.repos.d/verify.repo; \
+    dnf install -y -q \
+        gcc gcc-c++ glibc-devel glibc-gconv-extra make tar xz cpio clang gawk \
+        ca-certificates poppler-utils dejavu-sans-fonts; \
+    dnf clean all
+
+RUN set -eux; \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" -o /tmp/go.tgz; \
+    tar -C /usr/local -xzf /tmp/go.tgz; \
+    rm -f /tmp/go.tgz
+ENV PATH=/usr/local/go/bin:$PATH
+
+COPY ${CRYPTOPRO_PKG} /tmp/cprocsp-pkg
+RUN set -eux; \
+    if [ -d /tmp/cprocsp-pkg ]; then pkgdir=/tmp/cprocsp-pkg; \
+    else \
+        pkgdir=/tmp/cprocsp-src; mkdir -p "$pkgdir"; \
+        tar -xzf /tmp/cprocsp-pkg -C "$pkgdir" --strip-components=1; \
+    fi; \
+    cd "$pkgdir"; \
+    ./install.sh --yes kc1 lsb-cprocsp-devel cprocsp-pki-cades; \
+    cd /; rm -rf /tmp/cprocsp-pkg "$pkgdir"; \
+    for p in /opt/cprocsp/sbin/*/cpconfig; do "$p" -license -view; break; done
+
+COPY docker/rng/cp_getrandom.h /tmp/cp_getrandom.h
+RUN set -eux; \
+    libdir=$(dirname "$(ls /opt/cprocsp/lib/*/librdrsup.so | head -1)"); \
+    case "$(uname -m)" in \
+        x86_64) ldso=/lib64/ld-linux-x86-64.so.2 ;; \
+        *) ldso=/lib/ld-linux-aarch64.so.1 ;; \
+    esac; \
+    cp -a /opt/cprocsp/src/rdk /tmp/rdk; \
+    cd /tmp/rdk/rndm0; \
+    sed -i 's|memset(inf->info, 0xaa, inf->length)|if (cp_fill_random(inf->info, inf->length) != 0) return (DWORD)0x80090020|' r0_exp.c; \
+    make CSP_INCLUDE=/opt/cprocsp/include CSP_DIR=/opt/cprocsp \
+         CSP_LIB="$libdir" SIZEOF_VOID_P=8 LSB_LD="$ldso" \
+         CC=gcc CXX=g++ CPP="gcc -E" AWK=gawk SED=/bin/sed \
+         add_cflags="-include /tmp/cp_getrandom.h" \
+         librdrrndm0.so.4.0.5; \
+    cp -af librdrrndm0.so.4.0.5 "$libdir/"; \
+    ln -sf librdrrndm0.so.4.0.5 "$libdir/librdrrndm0.so"; \
+    ln -sf librdrrndm0.so.4.0.5 "$libdir/librdrrndm0.so.4"; \
+    for p in /opt/cprocsp/sbin/*/cpconfig; do \
+        "$p" -ini '\config\apppath' -add string librdrrndm0.so "$libdir/librdrrndm0.so"; \
+        "$p" -ini '\config\Random\RNDM0' -add string DLL librdrrndm0.so; \
+        "$p" -hardware rndm -add RNDM0 -name 'Software RNG (getrandom)' -level 1; \
+        "$p" -hardware rndm -del CPSD || true; \
+        "$p" -hardware rndm -del BIO_TUI || true; \
+        break; \
+    done; \
+    cd /; rm -rf /tmp/rdk /tmp/cp_getrandom.h
+
+WORKDIR /work
+COPY go.mod Makefile /work/
+COPY *.go gocades.c gocades.h /work/
+COPY cmd /work/cmd
+COPY internal /work/internal
+COPY samples /work/samples
+COPY testdata /work/testdata
+COPY scripts /work/scripts
+COPY docker/verify-crypto-inner.sh /work/docker/verify-crypto-inner.sh
+
+ENTRYPOINT ["sh", "/work/docker/verify-crypto-inner.sh"]
