@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>gocades — PDF SignHash (Browser Plugin)</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #1a1a1a; }
+    body { max-width: 72rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+    .layout { display: grid; grid-template-columns: 1fr minmax(18rem, 1fr); gap: 1.25rem; align-items: start; }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+    .preview-wrap h2 { margin-top: 0; }
+    .preview-caption { font-size: 0.85rem; color: #5e5c64; margin: 0.35rem 0 0.5rem; }
+    .preview-stage {
+      position: relative; display: inline-block; max-width: 100%;
+      border: 1px solid #ccc; border-radius: 4px; background: #eee; line-height: 0;
+    }
+    .preview-stage canvas { display: block; max-width: 100%; height: auto; }
+    #stampBox {
+      position: absolute; box-sizing: border-box; cursor: grab;
+      border: 2px solid #1a5fb4; background: rgba(26, 95, 180, 0.12);
+      color: #1a5fb4; font: 600 11px/1.25 system-ui, sans-serif;
+      padding: 6px; user-select: none; touch-action: none;
+      display: none;
+    }
+    #stampBox:active { cursor: grabbing; }
+    #stampBox .stamp-title { font-size: 10px; letter-spacing: 0.02em; }
+    #stampCoords { font-family: ui-monospace, monospace; font-size: 0.8rem; color: #5e5c64; margin-top: 0.4rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; }
+    h2 { font-size: 1rem; margin: 1.5rem 0 0.5rem; font-weight: 600; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-size: 0.9rem; }
+    input, textarea, select, button { font: inherit; box-sizing: border-box; }
+    input[type=text], textarea, select { width: 100%; padding: 0.45rem 0.55rem; border: 1px solid #ccc; border-radius: 4px; }
+    textarea { min-height: 4.5rem; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+    button {
+      margin-top: 0.75rem; margin-right: 0.5rem; padding: 0.45rem 0.9rem; cursor: pointer;
+      background: #1a5fb4; color: #fff; border: 0; border-radius: 4px;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.secondary { background: #5e5c64; }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+    #log {
+      margin-top: 1rem; padding: 0.75rem; background: #f6f5f4; border-radius: 4px;
+      white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.8rem; min-height: 3rem;
+    }
+    .hint { color: #5e5c64; font-size: 0.85rem; }
+    code { font-size: 0.9em; }
+    .meta { font-size: 0.85rem; color: #5e5c64; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://www.cryptopro.ru/sites/default/files/products/cades/cadesplugin_api.js"></script>
+</head>
+<body>
+  <h1>PAdES: PDF → дайджест → SignHash → Assemble</h1>
+  <p class="hint">
+    Локальный сервер делает <code>pdfsign.Prepare</code> / <code>Assemble</code>.
+    Плагин — <code>SignHash</code> по hex-дайджесту (сейчас всегда ГОСТ 2012-<b>256</b>).
+    <b>PIN / пароль контейнера</b> на странице не вводится: его спросит окно КриптоПро
+    при доступе к ключу. Выберите сертификат с ключом ГОСТ Р 34.10-2012 <b>256</b>
+    (не 512 и не RSA) — иначе часто будет <code>0x80070057</code>.
+  </p>
+
+  <div class="layout">
+  <div class="form-col">
+  <h2>1. PDF</h2>
+  <label for="pdf">Файл PDF</label>
+  <input type="file" id="pdf" accept="application/pdf,.pdf">
+  <label for="reason">Reason (необязательно)</label>
+  <input type="text" id="reason" placeholder="Document approval">
+  <label for="signer">Подписант на штампе (из сертификата или вручную)</label>
+  <input type="text" id="signer" placeholder="сначала загрузите сертификат — подставится ФИО из Subject">
+  <label class="row" style="margin-top:0.75rem">
+    <input type="checkbox" id="stamp" checked style="width:auto">
+    Видимый штамп (нужен системный .ttf: DejaVu/Arial)
+  </label>
+  <div class="row">
+    <button type="button" id="btnPrepare">Prepare (дайджест)</button>
+  </div>
+  <p class="meta" id="prepMeta"></p>
+
+  <label for="digest">Digest (hex)</label>
+  <textarea id="digest" readonly placeholder="появится после Prepare"></textarea>
+
+  <h2>2. Сертификат</h2>
+  <p class="hint">Выберите сертификат до Prepare — ФИО для штампа берётся из Subject (SN+G или CN).</p>
+  <label for="certs">Сертификат</label>
+  <select id="certs" disabled><option>сначала «Загрузить сертификаты»</option></select>
+  <div class="row">
+    <button type="button" id="btnLoad" class="secondary">Загрузить сертификаты</button>
+  </div>
+
+  <h2>3. Подпись</h2>
+  <div class="row">
+    <button type="button" id="btnSign" disabled>Подписать SignHash</button>
+  </div>
+
+  <label for="cms">CMS (Base64)</label>
+  <textarea id="cms" readonly placeholder="результат SignHash"></textarea>
+
+  <h2>4. Встроить в PDF</h2>
+  <div class="row">
+    <button type="button" id="btnAssemble" disabled>Assemble и скачать</button>
+  </div>
+
+  <div id="log"></div>
+  </div><!-- form-col -->
+
+  <div class="preview-wrap">
+    <h2>Предпросмотр</h2>
+    <p class="preview-caption" id="previewCaption">
+      выберите PDF — страница рендерится через PDF.js; синюю рамку штампа можно перетаскивать
+    </p>
+    <div class="preview-stage" id="previewStage">
+      <canvas id="previewCanvas"></canvas>
+      <div id="stampBox" title="перетащите штамп">
+        <div class="stamp-title">ДОКУМЕНТ ПОДПИСАН</div>
+        <div id="stampBoxSigner"></div>
+      </div>
+    </div>
+    <div id="stampCoords">stamp: —</div>
+  </div>
+  </div><!-- layout -->
+
+  <script>
+    let sessionId = "";
+    let pageWidthPt = 0, pageHeightPt = 0, renderScale = 1;
+    const STAMP_W_PT = 240, STAMP_H_PT = 80;
+
+    if (typeof pdfjsLib !== "undefined") {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    }
+
+    const logEl = document.getElementById("log");
+    const previewCaption = document.getElementById("previewCaption");
+    const previewStage = document.getElementById("previewStage");
+    const previewCanvas = document.getElementById("previewCanvas");
+    const stampBox = document.getElementById("stampBox");
+    const stampCoords = document.getElementById("stampCoords");
+    const certsEl = document.getElementById("certs");
+    const digestEl = document.getElementById("digest");
+    const cmsEl = document.getElementById("cms");
+    const prepMeta = document.getElementById("prepMeta");
+    const btnSign = document.getElementById("btnSign");
+    const btnAssemble = document.getElementById("btnAssemble");
+
+    function log(msg, isErr) {
+      logEl.textContent += (logEl.textContent ? "\n" : "") + (isErr ? "ERR: " : "") + msg;
+    }
+
+    function normalizeHex(s) {
+      return String(s || "").replace(/[\s:]/g, "").toLowerCase();
+    }
+
+    function stampPDFOrigin() {
+      // overlay top-left (CSS) → PDF lower-left (points, Y up)
+      const left = stampBox.offsetLeft;
+      const top = stampBox.offsetTop;
+      const boxH = stampBox.offsetHeight;
+      const x = left / renderScale;
+      const y = pageHeightPt - (top + boxH) / renderScale;
+      return { x, y, w: STAMP_W_PT, h: STAMP_H_PT };
+    }
+
+    function updateStampCoords() {
+      if (stampBox.style.display === "none" || !pageWidthPt) {
+        stampCoords.textContent = "stamp: —";
+        return;
+      }
+      const p = stampPDFOrigin();
+      stampCoords.textContent =
+        "stamp PDF: x=" + p.x.toFixed(1) + " y=" + p.y.toFixed(1) +
+        " (" + p.w + "×" + p.h + " pt), page=" + pageWidthPt.toFixed(0) + "×" + pageHeightPt.toFixed(0);
+    }
+
+    function placeStampDefault() {
+      const sw = STAMP_W_PT * renderScale;
+      const sh = STAMP_H_PT * renderScale;
+      stampBox.style.width = sw + "px";
+      stampBox.style.height = sh + "px";
+      const margin = 20 * renderScale;
+      stampBox.style.left = Math.max(0, previewCanvas.width - sw - margin) + "px";
+      stampBox.style.top = Math.max(0, previewCanvas.height - sh - margin) + "px";
+      stampBox.style.display = document.getElementById("stamp").checked ? "block" : "none";
+      document.getElementById("stampBoxSigner").textContent =
+        document.getElementById("signer").value.trim() || "…";
+      updateStampCoords();
+    }
+
+    async function renderPDFData(data, caption, showStamp) {
+      if (typeof pdfjsLib === "undefined") {
+        throw new Error("pdf.js не загружен");
+      }
+      const pdf = await pdfjsLib.getDocument({ data }).promise;
+      const page = await pdf.getPage(pdf.numPages);
+      const base = page.getViewport({ scale: 1 });
+      pageWidthPt = base.width;
+      pageHeightPt = base.height;
+      const maxW = Math.min(previewStage.parentElement.clientWidth || 480, 640);
+      renderScale = maxW / base.width;
+      const viewport = page.getViewport({ scale: renderScale });
+      previewCanvas.width = viewport.width;
+      previewCanvas.height = viewport.height;
+      const ctx = previewCanvas.getContext("2d");
+      ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      previewCaption.textContent = caption || ("стр. " + pdf.numPages + "/" + pdf.numPages);
+      if (showStamp) placeStampDefault();
+      else {
+        stampBox.style.display = "none";
+        updateStampCoords();
+      }
+    }
+
+    async function showPDFFile(file) {
+      if (!file) {
+        previewCaption.textContent = "выберите PDF";
+        stampBox.style.display = "none";
+        return;
+      }
+      const buf = await file.arrayBuffer();
+      await renderPDFData(buf, "исходный: " + file.name + " (последняя страница)", true);
+    }
+
+    async function showPDFBlob(blob, caption) {
+      const buf = await blob.arrayBuffer();
+      // после Assemble штамп уже в PDF — рамку прячем
+      await renderPDFData(buf, caption, false);
+    }
+
+    // drag stamp
+    (function enableStampDrag() {
+      let dragging = false, ox = 0, oy = 0;
+      stampBox.addEventListener("pointerdown", (e) => {
+        dragging = true;
+        ox = e.clientX - stampBox.offsetLeft;
+        oy = e.clientY - stampBox.offsetTop;
+        stampBox.setPointerCapture(e.pointerId);
+      });
+      stampBox.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        let left = e.clientX - ox;
+        let top = e.clientY - oy;
+        const maxL = previewCanvas.width - stampBox.offsetWidth;
+        const maxT = previewCanvas.height - stampBox.offsetHeight;
+        left = Math.min(Math.max(0, left), Math.max(0, maxL));
+        top = Math.min(Math.max(0, top), Math.max(0, maxT));
+        stampBox.style.left = left + "px";
+        stampBox.style.top = top + "px";
+        updateStampCoords();
+      });
+      stampBox.addEventListener("pointerup", () => { dragging = false; });
+    })();
+
+    async function withPlugin(fn) {
+      if (typeof cadesplugin === "undefined") {
+        throw new Error("cadesplugin не загружен");
+      }
+      await cadesplugin;
+      return fn();
+    }
+
+    async function prepare() {
+      logEl.textContent = "";
+      cmsEl.value = "";
+      digestEl.value = "";
+      sessionId = "";
+      prepMeta.textContent = "";
+      btnSign.disabled = true;
+      btnAssemble.disabled = true;
+
+      const file = document.getElementById("pdf").files[0];
+      if (!file) throw new Error("выберите PDF");
+
+      const fd = new FormData();
+      fd.append("pdf", file, file.name);
+      const reason = document.getElementById("reason").value.trim();
+      if (reason) fd.append("reason", reason);
+      let signer = document.getElementById("signer").value.trim();
+      // если в поле случайно весь DN — вытащим CN/ФИО
+      if (signer && /(?:^|,)\s*CN\s*=/i.test(signer)) {
+        signer = fioFromSubject(signer) || signer;
+      }
+      if (!signer) {
+        try {
+          const sel = await selectedCert();
+          if (sel) {
+            signer = fioFromSubject(sel.subject);
+            document.getElementById("signer").value = signer;
+          }
+        } catch (e) { /* сертификаты ещё не загружены */ }
+      }
+      if (!signer) {
+        throw new Error("укажите подписанта или загрузите/выберите сертификат (ФИО из Subject)");
+      }
+      fd.append("signer", signer);
+      const wantStamp = document.getElementById("stamp").checked;
+      fd.append("stamp", wantStamp ? "1" : "0");
+      fd.append("stampCorner", "br");
+      if (wantStamp && pageWidthPt) {
+        const p = stampPDFOrigin();
+        fd.append("stampX", String(p.x));
+        fd.append("stampY", String(p.y));
+        fd.append("stampW", String(p.w));
+        fd.append("stampH", String(p.h));
+        log("штамп → PDF pts: " + p.x.toFixed(1) + "," + p.y.toFixed(1));
+      }
+
+      const res = await fetch("/api/prepare", { method: "POST", body: fd });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text || ("HTTP " + res.status));
+      const data = JSON.parse(text);
+
+      sessionId = data.sessionId;
+      digestEl.value = data.digestHex;
+      prepMeta.textContent =
+        "session=" + data.sessionId +
+        ", field=" + data.fieldName +
+        ", pdfSize=" + data.pdfSize +
+        ", stamp=" + data.stamp +
+        ", byteRange=[" + data.byteRange.join(", ") + "]";
+      btnSign.disabled = false;
+      log("Prepare OK, digest " + data.digestHex.length + " hex chars, stamp=" + data.stamp);
+    }
+
+    async function certAlgLabel(cert) {
+      try {
+        const pk = await cert.PublicKey();
+        const alg = await pk.Algorithm;
+        const name = await alg.FriendlyName;
+        const oid = await alg.Value;
+        return name + " (" + oid + ")";
+      } catch (e) {
+        return "?";
+      }
+    }
+
+    // Разбор Subject DN от CADESCOM: ключи могут быть CN / SN / G или OID,
+    // вокруг "=" бывают пробелы, разделители — запятая или перевод строки.
+    function parseDN(dn) {
+      const map = Object.create(null);
+      String(dn || "")
+        .split(/[\n\r,]+/)
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .forEach((part) => {
+          const eq = part.indexOf("=");
+          if (eq <= 0) return;
+          let key = part.slice(0, eq).trim().toUpperCase();
+          let val = part.slice(eq + 1).trim();
+          if (
+            (val.startsWith('"') && val.endsWith('"')) ||
+            (val.startsWith("'") && val.endsWith("'"))
+          ) {
+            val = val.slice(1, -1).trim();
+          }
+          // OID → короткое имя
+          if (key === "172.16.1.2") key = "CN";
+          if (key === "10.10.0.3") key = "SN";
+          if (key === "192.168.0.3" || key === "10.20.0.1") key = "G";
+          if (key === "1.2.840.113549.1.9.1" || key === "EMAILADDRESS") key = "E";
+          if (!map[key]) map[key] = val;
+        });
+      return map;
+    }
+
+    function dnAttr(dn, key) {
+      const map = typeof dn === "object" && dn ? dn : parseDN(dn);
+      return map[String(key).toUpperCase()] || "";
+    }
+
+    // ФИО: SN+G (как в УКЭП), иначе CN. Не возвращаем весь DN.
+    function fioFromSubject(dn) {
+      const map = parseDN(dn);
+      const sn = map.SN || "";
+      const g = map.G || map.GN || "";
+      if (sn && g) return (sn + " " + g).trim();
+      if (map.CN) return map.CN;
+      return "";
+    }
+
+    async function selectedCert() {
+      const idx = Number(certsEl.value);
+      if (!idx) return null;
+      return withPlugin(async () => {
+        const store = await cadesplugin.CreateObjectAsync("CAdESCOM.Store");
+        await store.Open(
+          cadesplugin.CADESCOM_CURRENT_USER_STORE,
+          "My",
+          cadesplugin.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED
+        );
+        const cert = await (await store.Certificates).Item(idx);
+        const subject = await cert.SubjectName;
+        await store.Close();
+        return { cert, subject, idx };
+      });
+    }
+
+    async function applySignerFromCert() {
+      const sel = await selectedCert();
+      if (!sel) return;
+      const fio = fioFromSubject(sel.subject);
+      if (!fio) {
+        log("Subject без CN/SN: " + sel.subject, true);
+        return;
+      }
+      document.getElementById("signer").value = fio;
+      document.getElementById("stampBoxSigner").textContent = fio;
+      log("ФИО со штампа ← сертификат: " + fio);
+    }
+
+    async function loadCerts() {
+      await withPlugin(async () => {
+        const store = await cadesplugin.CreateObjectAsync("CAdESCOM.Store");
+        await store.Open(
+          cadesplugin.CADESCOM_CURRENT_USER_STORE,
+          "My",
+          cadesplugin.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED
+        );
+        const certs = await store.Certificates;
+        const n = await certs.Count;
+        certsEl.innerHTML = "";
+        let loaded = 0;
+        for (let i = 1; i <= n; i++) {
+          const c = await certs.Item(i);
+          if (!(await c.HasPrivateKey())) continue;
+          const opt = document.createElement("option");
+          opt.value = String(i);
+          const alg = await certAlgLabel(c);
+          opt.textContent = (await c.SubjectName) + " | " + alg + " | " + (await c.Thumbprint);
+          certsEl.appendChild(opt);
+          loaded++;
+        }
+        await store.Close();
+        certsEl.disabled = loaded === 0;
+        if (!loaded) throw new Error("нет сертификатов с закрытым ключом");
+        log("сертификатов с ключом: " + loaded + " (для этого демо нужен ГОСТ 2012-256)");
+        await applySignerFromCert();
+      });
+    }
+
+    async function signHash() {
+      cmsEl.value = "";
+      btnAssemble.disabled = true;
+      // CryptoPro часто ждёт hex в верхнем регистре.
+      const hex = normalizeHex(digestEl.value).toUpperCase();
+      if (!hex) throw new Error("сначала Prepare");
+      if (hex.length !== 64) {
+        throw new Error("для ГОСТ-2012-256 нужен digest из 64 hex-символов, сейчас " + hex.length);
+      }
+      const idx = Number(certsEl.value);
+      if (!idx) throw new Error("выберите сертификат");
+
+      await withPlugin(async () => {
+        const store = await cadesplugin.CreateObjectAsync("CAdESCOM.Store");
+        await store.Open(
+          cadesplugin.CADESCOM_CURRENT_USER_STORE,
+          "My",
+          cadesplugin.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED
+        );
+        const cert = await (await store.Certificates).Item(idx);
+        log("сертификат: " + (await certAlgLabel(cert)));
+
+        const hashedData = await cadesplugin.CreateObjectAsync("CAdESCOM.HashedData");
+        await hashedData.propset_Algorithm(
+          cadesplugin.CADESCOM_HASH_ALGORITHM_CP_GOST_3411_2012_256
+        );
+        await hashedData.SetHashValue(hex);
+
+        const signer = await cadesplugin.CreateObjectAsync("CAdESCOM.CPSigner");
+        await signer.propset_Certificate(cert);
+        // Не передаём undefined: CAPICOM_CERTIFICATE_INCLUDE_CHAIN_EXCEPT_ROOT
+        // в части сборок плагина отсутствует → 0x80070057.
+        // 0 = chain except root (дефолт CADESCOM / gocades).
+        const opt =
+          cadesplugin.CAPICOM_CERTIFICATE_INCLUDE_CHAIN_EXCEPT_ROOT ??
+          cadesplugin.CADESCOM_CERTIFICATE_INCLUDE_CHAIN_EXCEPT_ROOT ??
+          0;
+        await signer.propset_Options(opt);
+
+        const signedData = await cadesplugin.CreateObjectAsync("CAdESCOM.CadesSignedData");
+        // Порядок CADESCOM: SignHash(HashedData, Signer, CadesType) —
+        // не как в Go gocades.SignHash(cert, digest, type).
+        // PIN спросит окно КриптоПро при обращении к закрытому ключу.
+        let cmsB64;
+        try {
+          cmsB64 = await signedData.SignHash(
+            hashedData,
+            signer,
+            cadesplugin.CADESCOM_CADES_BES
+          );
+        } catch (err) {
+          throw new Error(cadesplugin.getLastError(err));
+        }
+        await store.Close();
+
+        cmsEl.value = cmsB64;
+        btnAssemble.disabled = !sessionId;
+        log("SignHash OK, CMS length=" + cmsB64.length);
+      });
+    }
+
+    async function assemble() {
+      if (!sessionId) throw new Error("нет sessionId");
+      const cmsBase64 = cmsEl.value.trim();
+      if (!cmsBase64) throw new Error("нет CMS");
+
+      const res = await fetch("/api/assemble", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, cmsBase64 }),
+      });
+      if (!res.ok) {
+        throw new Error(await res.text() || ("HTTP " + res.status));
+      }
+      const blob = await res.blob();
+      await showPDFBlob(blob, "подписанный PDF (после Assemble)");
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "signed.pdf";
+      a.click();
+      URL.revokeObjectURL(url);
+      log("Assemble OK: предпросмотр обновлён, signed.pdf скачан");
+      btnAssemble.disabled = true;
+    }
+
+    document.getElementById("pdf").onchange = (e) => {
+      showPDFFile(e.target.files[0]).catch((err) => log(String(err.message || err), true));
+    };
+    document.getElementById("stamp").onchange = () => {
+      if (!pageWidthPt) return;
+      stampBox.style.display = document.getElementById("stamp").checked ? "block" : "none";
+      updateStampCoords();
+    };
+    document.getElementById("signer").oninput = () => {
+      document.getElementById("stampBoxSigner").textContent =
+        document.getElementById("signer").value.trim() || "…";
+    };
+
+    certsEl.onchange = () => {
+      applySignerFromCert().catch((e) => log(String(e.message || e), true));
+    };
+
+    document.getElementById("btnPrepare").onclick = () => {
+      prepare().catch((e) => log(String(e.message || e), true));
+    };
+    document.getElementById("btnLoad").onclick = () => {
+      loadCerts().catch((e) => log(String(e.message || e), true));
+    };
+    document.getElementById("btnSign").onclick = () => {
+      signHash().catch((e) => log(String(e.message || e), true));
+    };
+    document.getElementById("btnAssemble").onclick = () => {
+      assemble().catch((e) => log(String(e.message || e), true));
+    };
+  </script>
+</body>
+</html>

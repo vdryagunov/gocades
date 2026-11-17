@@ -46,7 +46,14 @@ type Stamp struct {
 	FontSize float64
 
 	// Corner selects the page corner. Default StampBottomLeft.
+	// Ignored when Positioned is true.
 	Corner Corner
+
+	// Positioned places the stamp at (X, Y) — lower-left corner in PDF page
+	// coordinates (origin bottom-left, unit = point). Corner and Margin are
+	// ignored. X/Y are clamped so the box stays inside the page MediaBox.
+	Positioned bool
+	X, Y       float64
 
 	// Page places the stamp and the signature field on a 1-based page number.
 	// Zero means the last page.

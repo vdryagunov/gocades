@@ -17,5 +17,17 @@ export GOCADES_PIN=...   # или SMOKE_PIN / CRYPTOPRO_PIN
 | `sign_verify_xml` | `sign_verify_xml.py` | `go run ./samples/sign_verify_xml` |
 | `encrypt_decrypt` | `encrypt_decrypt.py` | `go run ./samples/encrypt_decrypt` |
 | `enum_containers` | `enum_containers.py` | `go run ./samples/enum_containers` |
+| `browser_signhash/` | — (HTML + Browser Plugin) | см. ниже |
 
 `enum_containers` PIN не требует. Все сразу: `go build ./samples/...`
+
+### Браузерный SignHash (`browser_signhash/`)
+
+Полный флоу PAdES в браузере: загрузка PDF → `Prepare` (дайджест) →
+Browser Plugin `SignHash` → `Assemble` и скачивание. Нужны CSP + плагин и
+сертификат в `CurrentUser/My`.
+
+```bash
+CGO_ENABLED=1 go run ./samples/browser_signhash
+# открыть http://127.0.0.1:8765/
+```

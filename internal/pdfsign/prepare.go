@@ -675,13 +675,40 @@ func stampRect(s *Stamp, media [4]float64) ([4]float64, error) {
 	var zero [4]float64
 
 	w, h := s.box()
+	pageW := media[2] - media[0]
+	pageH := media[3] - media[1]
+
+	if s.Positioned {
+		if w > pageW {
+			w = pageW
+		}
+		if h > pageH {
+			h = pageH
+		}
+		if w <= 0 || h <= 0 {
+			return zero, fmt.Errorf("%w: stamp box does not fit the page", ErrStampFont)
+		}
+		x0, y0 := s.X, s.Y
+		if x0 < media[0] {
+			x0 = media[0]
+		}
+		if y0 < media[1] {
+			y0 = media[1]
+		}
+		if x0+w > media[2] {
+			x0 = media[2] - w
+		}
+		if y0+h > media[3] {
+			y0 = media[3] - h
+		}
+		return [4]float64{x0, y0, x0 + w, y0 + h}, nil
+	}
+
 	margin := s.Margin
 	if margin <= 0 {
 		margin = defaultStampMargin
 	}
 
-	pageW := media[2] - media[0]
-	pageH := media[3] - media[1]
 	if w > pageW-2*margin {
 		w = pageW - 2*margin
 	}

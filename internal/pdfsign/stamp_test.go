@@ -269,3 +269,38 @@ func TestStampPageOutOfRange(t *testing.T) {
 		t.Fatalf("err = %v, want ErrInvalidPDF", err)
 	}
 }
+
+func TestStampPositioned(t *testing.T) {
+	font := testStampFont(t)
+	const x, y, w, h = 40.0, 60.0, 100.0, 50.0
+	prep, err := Prepare(simplePDF(t), Options{
+		Hash: HashSHA256,
+		Stamp: &Stamp{
+			Font:       font,
+			Positioned: true,
+			X:          x,
+			Y:          y,
+			Width:      w,
+			Height:     h,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	f, _, field, _ := findSigField(t, prep.PDF)
+	rect, err := f.resolveArray(field["Rect"])
+	if err != nil || len(rect) != 4 {
+		t.Fatalf("/Rect: %v", err)
+	}
+	var got [4]float64
+	for i, o := range rect {
+		v, ok := toFloat(o)
+		if !ok {
+			t.Fatalf("/Rect[%d] = %T", i, o)
+		}
+		got[i] = v
+	}
+	if got[0] != x || got[1] != y || got[2] != x+w || got[3] != y+h {
+		t.Fatalf("/Rect = %v, want [%g %g %g %g]", got, x, y, x+w, y+h)
+	}
+}
