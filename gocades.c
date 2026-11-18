@@ -234,13 +234,16 @@ int32_t cp_cert_has_private_key(void *hCert)
 /* Defined in the generic helpers section below. */
 static char *cp_wide_to_utf8(const wchar_t *w);
 
-static int32_t cp_cert_name(void *hCert, DWORD type, cp_buf *out)
+/* dwType is CERT_NAME_*_TYPE; dwFlags may include CERT_NAME_ISSUER_FLAG.
+ * Do not OR ISSUER_FLAG into dwType: CertGetNameStringW takes it in dwFlags
+ * (SIMPLE_DISPLAY|ISSUER_FLAG == 5 == FRIENDLY_DISPLAY on the subject). */
+static int32_t cp_cert_name(void *hCert, DWORD type, DWORD flags, cp_buf *out)
 {
     PCCERT_CONTEXT c = (PCCERT_CONTEXT)hCert;
 
     /* The ANSI variant returns the local 8-bit code page (CP1251 for Russian),
      * so go through the wide API and convert to UTF-8. */
-    DWORD n = CertGetNameStringW(c, type, 0, NULL, NULL, 0);
+    DWORD n = CertGetNameStringW(c, type, flags, NULL, NULL, 0);
     if (n <= 1) {
         out->data = NULL;
         out->len = 0;
@@ -252,7 +255,7 @@ static int32_t cp_cert_name(void *hCert, DWORD type, cp_buf *out)
         return CP_E_OUTOFMEMORY;
     }
 
-    DWORD got = CertGetNameStringW(c, type, 0, NULL, wbuf, n);
+    DWORD got = CertGetNameStringW(c, type, flags, NULL, wbuf, n);
 
     int32_t rc;
     if (got > 1) {
@@ -278,7 +281,7 @@ int32_t cp_cert_subject(void *hCert, cp_buf *out)
     if (!hCert) {
         return CP_E_INVALIDARG;
     }
-    return cp_cert_name(hCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, out);
+    return cp_cert_name(hCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, out);
 }
 
 int32_t cp_cert_issuer(void *hCert, cp_buf *out)
@@ -287,7 +290,7 @@ int32_t cp_cert_issuer(void *hCert, cp_buf *out)
         return CP_E_INVALIDARG;
     }
     return cp_cert_name(
-        hCert, CERT_NAME_SIMPLE_DISPLAY_TYPE | CERT_NAME_ISSUER_FLAG, out);
+        hCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, CERT_NAME_ISSUER_FLAG, out);
 }
 
 int32_t cp_cert_thumbprint(void *hCert, cp_buf *out)
@@ -1108,37 +1111,42 @@ int32_t cp_cert_info(void *hCert, int32_t info_type, cp_buf *out)
     if (!hCert) {
         return CP_E_INVALIDARG;
     }
-    DWORD flags;
+    DWORD type;
+    DWORD flags = 0;
     switch (info_type) {
-    case 0:
-        flags = CERT_NAME_SIMPLE_DISPLAY_TYPE;
+    case 0: /* CertInfoSubjectSimpleName */
+        type = CERT_NAME_SIMPLE_DISPLAY_TYPE;
         break;
-    case 1:
-        flags = CERT_NAME_SIMPLE_DISPLAY_TYPE | CERT_NAME_ISSUER_FLAG;
+    case 1: /* CertInfoIssuerSimpleName */
+        type = CERT_NAME_SIMPLE_DISPLAY_TYPE;
+        flags = CERT_NAME_ISSUER_FLAG;
         break;
-    case 2:
-        flags = CERT_NAME_EMAIL_TYPE;
+    case 2: /* CertInfoSubjectEmailName */
+        type = CERT_NAME_EMAIL_TYPE;
         break;
-    case 3:
-        flags = CERT_NAME_EMAIL_TYPE | CERT_NAME_ISSUER_FLAG;
+    case 3: /* CertInfoIssuerEmailName */
+        type = CERT_NAME_EMAIL_TYPE;
+        flags = CERT_NAME_ISSUER_FLAG;
         break;
-    case 4:
-        flags = CERT_NAME_UPN_TYPE;
+    case 4: /* CertInfoSubjectUPN */
+        type = CERT_NAME_UPN_TYPE;
         break;
-    case 5:
-        flags = CERT_NAME_UPN_TYPE | CERT_NAME_ISSUER_FLAG;
+    case 5: /* CertInfoIssuerUPN */
+        type = CERT_NAME_UPN_TYPE;
+        flags = CERT_NAME_ISSUER_FLAG;
         break;
-    case 6:
-        flags = CERT_NAME_DNS_TYPE;
+    case 6: /* CertInfoSubjectDNSName */
+        type = CERT_NAME_DNS_TYPE;
         break;
-    case 7:
-        flags = CERT_NAME_DNS_TYPE | CERT_NAME_ISSUER_FLAG;
+    case 7: /* CertInfoIssuerDNSName */
+        type = CERT_NAME_DNS_TYPE;
+        flags = CERT_NAME_ISSUER_FLAG;
         break;
     default:
         return CP_E_FAIL;
     }
 
-    return cp_cert_name(hCert, flags, out);
+    return cp_cert_name(hCert, type, flags, out);
 }
 
 int32_t cp_cert_key_usage(void *hCert, cp_key_usage *out)
